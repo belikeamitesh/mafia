@@ -123,6 +123,13 @@ section{min-height:0;display:flex;flex-direction:column;gap:12px}
 .typing{min-height:22px;padding:0 14px 4px;font-size:12px;color:var(--muted)}
 .composer{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line)}
 .composer textarea{resize:none;height:44px;max-height:120px}
+.recbar{flex:1;display:flex;align-items:center;gap:10px;padding:0 6px 0 14px;border:1px solid var(--red);border-radius:10px;font-variant-numeric:tabular-nums;min-width:0;white-space:nowrap;overflow:hidden}
+.recdot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--red);animation:pulse 1s infinite}
+.recbar button{margin-left:auto;padding:4px 10px}
+#micBtn{font-size:18px;padding:9px 12px}
+#micBtn.on{background:var(--red)}
+.voice{display:flex;align-items:center;gap:8px;white-space:normal}
+.voice audio{height:36px;width:240px;max-width:58vw}
 
 /* overlay */
 .overlay{position:fixed;inset:0;background:#000b;display:grid;place-items:center;padding:16px;z-index:50;animation:fade .2s}
@@ -186,7 +193,7 @@ section{min-height:0;display:flex;flex-direction:column;gap:12px}
     <span class="chip timer hidden" id="hTimer"></span>
     <span class="spacer"></span>
     <span class="chip role-chip hidden" id="hRole"></span>
-    <button class="chip hidden" id="stopBtn" title="Stop the game">⏹ Stop</button>
+    <button class="chip hidden" id="closeBtn" title="End the game, clear the chat and delete this room">⏹ Stop</button>
     <button class="chip" onclick="showRules()" title="Rules">📖</button>
     <button class="chip" id="leaveBtn" title="Leave">🚪</button>
   </header>
@@ -201,6 +208,8 @@ section{min-height:0;display:flex;flex-direction:column;gap:12px}
       <div class="typing" id="typing"></div>
       <form class="composer" id="composer">
         <textarea id="msgIn" maxlength="400" placeholder="Say something…"></textarea>
+        <div id="recBar" class="recbar hidden"><span class="recdot"></span><span id="recTime">0:00</span><span class="muted">Recording… tap ⏹ to send</span><button type="button" class="ghost" id="recCancel" title="Discard">✕</button></div>
+        <button type="button" id="micBtn" title="Record a voice note (up to 30 seconds)">🎤</button>
         <button class="primary" id="sendBtn">Send</button>
       </form>
     </section>
@@ -241,7 +250,7 @@ const socket = io();
 // Your current room survives refreshes and reopening the site, until you press Leave.
 let S = null, roomCode = new URLSearchParams(location.search).get('room')?.toUpperCase() || store.get('mafia_room') || null;
 let msgs = new Map(), tab = 'public', unread = { public: 0, mafia: 0, police: 0, doctor: 0, dead: 0 }, clockSkew = 0, mobilePane = 'left';
-const typers = {}; let lastTypingSent = 0;
+const typers = {}; let lastTypingSent = 0, rec = null; // rec: the voice note being recorded
 
 // ---------- connection ----------
 function join(opts) {
@@ -275,9 +284,10 @@ socket.on('msgUpdate', u => { const m = msgs.get(u.id); if (m) { m.reactions = u
 socket.on('typing', t => { typers[t.ch + t.id] = { ...t, until: Date.now() + 3000 }; renderTyping(); });
 socket.on('toast', toast);
 socket.on('announce', a => announce(a));
-function forgetRoom() { S = null; roomCode = null; store.set('mafia_room', ''); history.replaceState(null, '', '/'); }
+function forgetRoom() { stopRec(true); S = null; roomCode = null; msgs = new Map(); $('#msgs').replaceChildren(); store.set('mafia_room', ''); history.replaceState(null, '', '/'); }
 // Render's free plan sleeps after 15 idle minutes; a ping while in a room keeps a running game alive.
 setInterval(() => { if (roomCode) fetch('/health').catch(() => {}); }, 4 * 60000);
+socket.on('closed', by => { const code = roomCode; forgetRoom(); store.set('mafia_last_room', ''); showLanding(); toast(`${by} (host) stopped the game and closed room ${code}.`); });
 socket.on('kicked', reason => { if (/left/.test(reason)) store.set('mafia_last_room', roomCode); forgetRoom(); showLanding(); toast('You ' + reason.replace('was ', 'were ') + '.'); });
 
 function showLanding(code) {
@@ -310,7 +320,7 @@ function render() {
   const r = S.me.role && ROLES[S.me.role];
   $('#hRole').classList.toggle('hidden', !r);
   if (r) { $('#hRole').replaceChildren(`${r.icon} ${r.name}${S.me.alive ? '' : ' ☠️'} `, el('i', { className: 'info', textContent: 'i' })); $('#hRole').onclick = () => roleInfo(S.me.role); }
-  $('#stopBtn').classList.toggle('hidden', !(S.hostId === S.me.id && (S.phase === 'night' || S.phase === 'day')));
+  $('#closeBtn').classList.toggle('hidden', S.hostId !== S.me.id);
   renderPhaseCard(); renderPlayers(); renderTabs(); renderComposer(); tick();
 }
 
@@ -430,6 +440,7 @@ function renderTabs() {
 function renderComposer() {
   const can = S.me.canWrite[tab], i = $('#msgIn');
   i.disabled = $('#sendBtn').disabled = !can;
+  $('#micBtn').disabled = !can && !rec;
   i.placeholder = can ? (tab === 'mafia' ? 'Whisper to your Mafia team…' : tab === 'police' ? 'Talk to your police partner…' : tab === 'doctor' ? 'Talk to your fellow doctor…' : tab === 'dead' ? 'Talk to the other ghosts…' : 'Say something… (@name to mention)')
     : !S.me.alive || S.me.spectator ? '👻 You are out — use the Graveyard tab' : S.phase === 'night' ? '🌙 The town is asleep. Chat opens at dawn.' : 'You cannot post here';
 }
@@ -454,13 +465,13 @@ function appendMsg(m) {
       box.append(g);
     }
     lastGrp = { from: m.from, ts: m.ts, node: g };
-    const bub = el('div', { className: 'bub', style: `--c:${m.color}` }, ...linkMentions(m.text));
+    const bub = el('div', { className: 'bub', style: `--c:${m.color}` }, ...(m.voice ? voiceNode(m.voice) : linkMentions(m.text)));
     if (!mine && new RegExp('@' + escapeRe(S.me.name) + '\\b', 'i').test(m.text)) bub.classList.add('ping');
     const wrap = el('div', { className: 'bubwrap' }, bub, rxRow(m));
     wrap.dataset.mid = m.id;
     const picker = el('div', { className: 'picker' }, ...S.reactions.map(e => { const b = el('button', { type: 'button', textContent: e }); b.onclick = ev => { ev.stopPropagation(); wrap.classList.remove('open'); act('react', { id: m.id, emoji: e }); }; return b; }));
     wrap.prepend(picker);
-    bub.onclick = () => { document.querySelectorAll('.bubwrap.open').forEach(x => x !== wrap && x.classList.remove('open')); wrap.classList.toggle('open'); };
+    bub.onclick = e => { if (e.target.closest('audio')) return; document.querySelectorAll('.bubwrap.open').forEach(x => x !== wrap && x.classList.remove('open')); wrap.classList.toggle('open'); };
     g.querySelector('.body').append(wrap);
   }
   if (atBottom || m.from === S.me.id) box.scrollTop = box.scrollHeight;
@@ -483,8 +494,52 @@ function linkMentions(text) {
 
 function renderTyping() {
   const now = Date.now(), list = Object.values(typers).filter(t => t.ch === tab && t.until > now && P(t.id));
-  $('#typing').replaceChildren(...(list.length ? [...list.flatMap((t, i) => [i ? ', ' : '', el('b', { textContent: P(t.id).name, style: `color:${P(t.id).color}` })]), list.length > 1 ? ' are typing…' : ' is typing…'] : []));
+  const doing = list.every(t => t.rec) ? 'recording a voice note 🎤…' : 'typing…';
+  $('#typing').replaceChildren(...(list.length ? [...list.flatMap((t, i) => [i ? ', ' : '', el('b', { textContent: P(t.id).name + (t.rec ? ' 🎤' : ''), style: `color:${P(t.id).color}` })]), (list.length > 1 ? ' are ' : ' is ') + doing] : []));
 }
+
+function voiceNode(v) {
+  if (!v.data) return [el('span', { className: 'muted', textContent: `🎤 Voice note (${v.dur}s) — expired` })];
+  const src = URL.createObjectURL(new Blob([v.data], { type: v.mime }));
+  return [el('div', { className: 'voice' }, '🎤', el('audio', { controls: true, preload: 'metadata', src }), el('span', { className: 'muted', textContent: v.dur + 's' }))];
+}
+
+// ---------- voice notes: tap 🎤 to record, tap ⏹ to send, ✕ to discard ----------
+async function startRec() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('Voice notes are not supported in this browser.');
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { return toast('Microphone blocked — allow mic access for this site to send voice notes.'); }
+  const type = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find(t => MediaRecorder.isTypeSupported(t));
+  const mr = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 32000 } : undefined);
+  const r = rec = { mr, chunks: [], start: Date.now(), ch: tab, cancelled: false };
+  mr.ondataavailable = e => { if (e.data.size) r.chunks.push(e.data); };
+  mr.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    clearInterval(r.timer); rec = null; showRec(false);
+    if (r.cancelled) return;
+    const dur = (Date.now() - r.start) / 1000;
+    if (dur < 0.8) return toast('Too short — tap 🎤, talk, then tap ⏹ to send.');
+    const blob = new Blob(r.chunks, { type: mr.mimeType });
+    act('voice', { ch: r.ch, audio: await blob.arrayBuffer(), mime: mr.mimeType, dur });
+  };
+  mr.start(); showRec(true);
+  r.timer = setInterval(() => {
+    const s = Math.floor((Date.now() - r.start) / 1000);
+    $('#recTime').textContent = '0:' + String(s).padStart(2, '0');
+    if (Date.now() - lastTypingSent > 1500) { lastTypingSent = Date.now(); act('typing', { ch: r.ch, rec: true }); }
+    if (s >= 30) stopRec(false);
+  }, 250);
+}
+function stopRec(cancel) { if (rec && rec.mr.state === 'recording') { rec.cancelled = cancel; rec.mr.stop(); } }
+function showRec(on) {
+  $('#msgIn').classList.toggle('hidden', on); $('#recBar').classList.toggle('hidden', !on);
+  $('#micBtn').classList.toggle('on', on); $('#micBtn').textContent = on ? '⏹' : '🎤';
+  $('#recTime').textContent = '0:00';
+  if (S) renderComposer();
+}
+$('#micBtn').onclick = () => rec ? stopRec(false) : startRec();
+$('#recCancel').onclick = () => stopRec(true);
 
 $('#composer').onsubmit = e => { e.preventDefault(); const t = $('#msgIn').value.trim(); if (!t) return; act('chat', { ch: tab, text: t }); $('#msgIn').value = ''; $('#msgIn').focus(); };
 $('#msgIn').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#composer').requestSubmit(); } };
@@ -537,7 +592,7 @@ function showRules() {
   announce({ kind: 'info', icon: '📖', title: 'How to play', body: [el('ul', {},
     li('Everyone secretly gets a role. Mafia know each other; nobody else knows anyone.'),
     li('Roles scale with players: 1 Mafia per 4 players · Police: none under 5, 1 for 5–9, 2 for 10+ · Doctor: none under 6, 1 for 6–13, 2 for 14+. Everyone else is a Villager. Min 4 players, no max.'),
-    li('The person who creates the room is the host: they share the link, press Start once everyone is in, and can press ⏹ Stop to end a game. Once a game starts the room is locked — nobody new can join until it ends.'),
+    li('The person who creates the room is the host: they share the link, press Start once everyone is in, and can press ⏹ Stop at any time to end the game, delete the chat and close the room. Once a game starts the room is locked — nobody new can join until it ends.'),
     li('You only know your own role. Mafia know each other and share a private chat. With 2 Police (or 2 Doctors), those two know each other and share a private chat. A single Police or Doctor has no private chat.'),
     li('🌙 Night: Mafia pick a victim, Doctor protects one person, Police checks one person. Town chat is closed.'),
     li('☀️ Day: the victim is revealed, along with whether they were Mafia (never their exact role). Discuss, then vote (max 10 min). Most votes is out, and everyone learns if they were Mafia or not. A tie, or more "skip" votes than the top, means nobody is out.'),
@@ -553,7 +608,7 @@ $('#shareBtn').onclick = async () => {
   if (navigator.share && matchMedia('(pointer:coarse)').matches) { try { await navigator.share({ title: 'Join my Mafia game', text: 'Join my Mafia game 🔪', url }); return; } catch {} }
   try { await navigator.clipboard.writeText(url); toast('Invite link copied! 🔗'); } catch { prompt('Copy this link:', url); }
 };
-$('#stopBtn').onclick = () => { if (confirm('Stop this game for everyone and go back to the lobby?')) act('stop'); };
+$('#closeBtn').onclick = () => { if (confirm('Stop for everyone? The game ends, the chat is deleted and this room code stops working.')) act('close'); };
 $('#leaveBtn').onclick = () => {
   const mid = S && (S.phase === 'day' || S.phase === 'night') && S.me.alive && !S.me.spectator;
   if (confirm(mid ? 'Leave the game? You will be out and your role revealed.' : 'Leave this room?')) act('leave');
