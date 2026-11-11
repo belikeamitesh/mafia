@@ -31,6 +31,9 @@ function topVoted(votes, ignore) {
 
 // Deaths only reveal Mafia / not Mafia — Doctor and Police stay secret.
 const side = p => p.role === 'mafia' ? 'They WERE Mafia 🔪' : 'They were NOT Mafia';
+const MAX_VOICE_BYTES = 600 * 1024; // ~30s of compressed speech
+const MAX_VOICE_KEPT = 40;
+const VOICE_TYPES = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/aac'];
 const TEAMS = ['mafia', 'police', 'doctor']; // private team chat: mafia always, police/doctor only when there are 2
 
 class Room {
@@ -326,15 +329,32 @@ class Room {
     return ch === 'public' && this.phase === 'day'; // town sleeps at night
   }
 
-  chat(p, ch, raw) {
-    const text = String(raw || '').replace(/[\u0000-\u0008\u000b-\u001f]/g, '').trim().slice(0, 400);
-    if (!text) return;
+  // Same posting rules for text and voice: who can write where, plus a small rate limit.
+  checkPost(p, ch, gapMs) {
     if (!this.canWrite(p, ch)) throw this.ghost(p) && ch === 'public' ? 'You are out — the dead tell no tales (use the Graveyard chat).'
       : ch === 'public' && this.phase === 'night' ? 'Shh… the town is asleep. Chat opens at day.' : 'You cannot post there.';
     const now = Date.now();
-    if (now - p.lastMsgAt < 400) throw 'Slow down a bit!';
+    if (now - p.lastMsgAt < gapMs) throw 'Slow down a bit!';
     p.lastMsgAt = now;
+  }
+
+  chat(p, ch, raw) {
+    const text = String(raw || '').replace(/[\u0000-\u0008\u000b-\u001f]/g, '').trim().slice(0, 400);
+    if (!text) return;
+    this.checkPost(p, ch, 400);
     this.post({ ch, from: p.id, name: p.name, color: p.color, text });
+  }
+
+  voice(p, ch, audio, mime, dur) {
+    if (!Buffer.isBuffer(audio) || audio.length < 100) throw 'That voice note was empty.';
+    if (audio.length > MAX_VOICE_BYTES) throw 'Voice note too long — keep it under 30 seconds.';
+    mime = String(mime || '').split(';')[0];
+    if (!VOICE_TYPES.includes(mime)) throw 'Your browser recorded an unsupported audio format.';
+    this.checkPost(p, ch, 1500);
+    this.post({ ch, from: p.id, name: p.name, color: p.color, text: '', voice: { data: audio, mime, dur: Math.min(30, Math.max(1, Math.round(+dur) || 1)) } });
+    // ponytail: only the newest MAX_VOICE_KEPT notes keep their audio, so a long game can't eat the server's memory.
+    const voices = this.messages.filter(m => m.voice && m.voice.data);
+    for (const m of voices.slice(0, -MAX_VOICE_KEPT)) m.voice = { expired: true, dur: m.voice.dur };
   }
 
   sys(text) { this.post({ ch: 'public', from: null, text }); }
@@ -357,9 +377,9 @@ class Room {
     for (const q of this.players.values()) if (this.canRead(q, m.ch)) this.send(q.id, 'msgUpdate', { id: m.id, reactions: m.reactions });
   }
 
-  typing(p, ch) {
+  typing(p, ch, rec) {
     if (!this.canWrite(p, ch)) return;
-    for (const q of this.players.values()) if (q !== p && this.canRead(q, ch)) this.send(q.id, 'typing', { ch, id: p.id });
+    for (const q of this.players.values()) if (q !== p && this.canRead(q, ch)) this.send(q.id, 'typing', { ch, id: p.id, rec: !!rec });
   }
 
   sendHistory(p) { this.send(p.id, 'history', this.messages.filter(m => this.canRead(p, m.ch))); }
@@ -406,18 +426,22 @@ class Room {
     const isHost = p.id === this.hostId;
     switch (type) {
       case 'chat': return this.chat(p, a.ch, a.text);
+      case 'voice': return this.voice(p, a.ch, a.audio, a.mime, a.dur);
       case 'react': return this.react(p, a.id, a.emoji);
-      case 'typing': return this.typing(p, a.ch);
+      case 'typing': return this.typing(p, a.ch, a.rec);
       case 'vote': return this.vote(p, a.target);
       case 'night': return this.nightAction(p, a.target);
       case 'leave': return this.remove(p, 'left the game');
       case 'start': if (!isHost) throw 'Only the host can start.'; return this.start();
       case 'lobby': if (!isHost) throw 'Only the host can do that.'; return this.resetToLobby();
-      case 'stop': {
+      case 'close': {
         if (!isHost) throw 'Only the host can stop the game.';
-        if (this.phase !== 'night' && this.phase !== 'day') return;
-        this.sys(`⏹️ ${p.name} (host) stopped the game.`);
-        return this.resetToLobby();
+        // Stop = end everything: game, chat history and the room itself (the server deletes it once closed is set).
+        this.cancel(this.timer);
+        this.closed = true;
+        for (const q of this.players.values()) this.send(q.id, 'closed', p.name);
+        this.players.clear(); this.byToken.clear(); this.leftTokens.clear(); this.messages = [];
+        return;
       }
       case 'kick': {
         if (!isHost) throw 'Only the host can remove players.';
