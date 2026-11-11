@@ -22,11 +22,21 @@ io.on('connection', socket => {
   let room = null, player = null;
 
   socket.on('join', (a = {}, cb = () => {}) => {
-    if (typeof cb !== 'function' || player) return;
+    if (typeof cb !== 'function') return;
+    // Same page joining again (e.g. Create after Leave): drop the old binding first.
+    if (player) {
+      socket.leave('p:' + player.id);
+      if (room.players.has(player.id)) room.disconnect(player);
+      room = player = null;
+    }
     let code = String(a.code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    // One room per browser: leave your current room before creating or joining another.
+    const current = [...rooms.values()].find(x => x.byToken.has(a.token));
+    if (current && (a.create || current.code !== code))
+      return cb({ error: `You are already in room ${current.code}. Use 🚪 Leave there first to start or join another game.`, code: current.code });
     if (a.create) { code = newCode(); rooms.set(code, new Room(code, (id, ev, data) => io.to('p:' + id).emit(ev, data))); }
     const r = rooms.get(code);
-    if (!r) return cb({ error: 'Room not found. Check the code or create a new room.' });
+    if (!r) return cb({ error: `Room ${code || ''} no longer exists — the game ended or the server restarted. Create a new room.`, gone: true });
     // A known token re-attaches to the same player — the same browser can never be two players.
     const res = r.join(a.token, a.name);
     if (res.error) return cb({ error: res.error, needName: !r.byToken.has(a.token) });
