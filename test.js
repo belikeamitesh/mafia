@@ -109,13 +109,6 @@ t('player offline at start sits out: no vote, no action, no town chat, graveyard
   throws(() => r.chat(off, 'public', 'hi'), /out|dead/);
   r.chat(off, 'dead', 'watching');
 });
-t('host Stop: host only, ends game for everyone', () => {
-  const { r, ps } = game('MPDVVV');
-  throws(() => r.handle(ps[1], 'stop'), /host/);
-  r.handle(ps[0], 'stop');
-  assert.strictEqual(r.phase, 'lobby');
-  assert.ok([...r.players.values()].every(p => !p.role));
-});
 t('settings: host only, clamped, locked during game', () => {
   const { r } = room();
   const h = r.join('token-hostxxxx', 'H').player, o = r.join('token-othrxxxx', 'O').player;
@@ -462,6 +455,59 @@ t('left in lobby: can join the same room again as a fresh player', () => {
   r.handle(a, 'leave');
   const again = r.join('token-aaaaaaaa', 'A').player;
   assert.ok(again && again !== a && r.players.has(again.id));
+});
+
+t('host Stop: host only, any phase, tells everyone, deletes chat and room', () => {
+  const { r, ps, sent } = game('MPDVVV');
+  throws(() => r.handle(ps[1], 'close'), /host/);
+  r.handle(ps[0], 'close');
+  assert.ok(r.closed && r.players.size === 0 && r.messages.length === 0);
+  assert.strictEqual(sent.filter(s => s.ev === 'closed').length, 6);
+  const lobby = room(); const h = lobby.r.join('token-hhhhhhhh', 'H').player;
+  lobby.r.handle(h, 'close'); assert.ok(lobby.r.closed);
+});
+
+// ---------- voice notes ----------
+const audio = (n = 2000) => Buffer.alloc(n, 7);
+t('voice notes follow the same chat rules as text', () => {
+  const { r, ps, sent } = game('MMPDVVVV');
+  const [m1, , , , v] = ps;
+  throws(() => r.voice(v, 'public', audio(), 'audio/webm', 3), /asleep/);
+  r.voice(m1, 'mafia', audio(), 'audio/webm;codecs=opus', 3);
+  const got = sent.filter(s => s.ev === 'msg' && s.d.voice).map(s => s.id).sort();
+  assert.deepStrictEqual(got, [ps[0].id, ps[1].id].sort(), 'mafia voice note leaked');
+  assert.strictEqual(r.messages.at(-1).voice.mime, 'audio/webm');
+  r.nightAction(m1, v.id); r.endNight();
+  throws(() => r.voice(v, 'public', audio(), 'audio/webm', 3), /dead/);
+  r.voice(v, 'dead', audio(), 'audio/mp4', 3);
+  ps[5].lastMsgAt = 0; r.voice(ps[5], 'public', audio(), 'audio/ogg', 99);
+  assert.strictEqual(r.messages.at(-1).voice.dur, 30);
+  throws(() => r.voice(ps[5], 'public', audio(), 'audio/ogg', 2), /Slow down/);
+});
+t('voice notes: size, format and empty checks; reactions work', () => {
+  const { r, ps } = game('MPDVVV');
+  r.endNight();
+  const v = ps[3];
+  throws(() => r.voice(v, 'public', audio(700 * 1024), 'audio/webm', 5), /too long/);
+  throws(() => r.voice(v, 'public', audio(), 'video/mp4', 5), /unsupported/);
+  throws(() => r.voice(v, 'public', 'not audio', 'audio/webm', 5), /empty/);
+  throws(() => r.voice(v, 'public', audio(10), 'audio/webm', 5), /empty/);
+  r.voice(v, 'public', audio(), 'audio/webm', 5);
+  r.react(ps[4], r.messages.at(-1).id, '😂');
+  assert.deepStrictEqual(r.messages.at(-1).reactions, { '😂': [ps[4].id] });
+});
+t('only the newest 40 voice notes keep their audio', () => {
+  const { r, ps } = game('MPDVVV');
+  r.endNight();
+  for (let i = 0; i < 45; i++) { ps[3].lastMsgAt = 0; r.voice(ps[3], 'public', audio(), 'audio/webm', 2); }
+  const notes = r.messages.filter(m => m.voice);
+  assert.strictEqual(notes.filter(m => m.voice.data).length, 40);
+  assert.ok(notes.slice(0, 5).every(m => m.voice.expired));
+});
+t('typing indicator can say "recording"', () => {
+  const { r, ps, sent } = game('MMPDVVVV');
+  r.typing(ps[0], 'mafia', true);
+  assert.deepStrictEqual(sent.filter(s => s.ev === 'typing').map(s => s.d.rec), [true]);
 });
 
 console.log(`all ${passed} rule checks passed`);
