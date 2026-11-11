@@ -62,11 +62,23 @@ function client(token) {
   vill.act('chat', { ch: 'public', text: 'hello?' }); await wait(150);
   assert.match(vill.toasts.at(-1), /asleep/);
 
-  // non-host cannot stop, host can
-  vill.act('stop'); await wait(150);
+  // voice note over a real socket: binary arrives intact, only for the mafia
+  const bytes = Buffer.from(Array.from({ length: 5000 }, (_, i) => i % 251));
+  await wait(1600); mafia.act('voice', { ch: 'mafia', audio: bytes, mime: 'audio/webm', dur: 4 }); await wait(300);
+  for (const c of all) {
+    const got = c.msgs.find(m => m.voice);
+    assert.strictEqual(!!got, c.state.me.role === 'mafia');
+    if (got) assert.ok(Buffer.from(got.voice.data).equals(bytes), 'audio corrupted in transit');
+  }
+  // a 30s-sized note fits through the socket limit
+  const big = Buffer.alloc(590 * 1024, 1);
+  await wait(1600); mafia.act('voice', { ch: 'mafia', audio: big, mime: 'audio/webm', dur: 30 }); await wait(500);
+  assert.strictEqual(mafia.msgs.filter(m => m.voice).length, 2, 'large voice note rejected');
+
+  // only the host can Stop (host Stop is checked at the end, since it deletes the room)
+  vill.act('close'); await wait(150);
   assert.strictEqual(host.state.phase, 'night');
-  host.act('stop'); await wait(200);
-  for (const c of all) assert.strictEqual(c.state.phase, 'lobby');
+  assert.match(vill.toasts.at(-1), /host/);
 
   // refresh: reconnect with same token restores the same player
   const id = others[1].state.me.id; others[1].disconnect();
@@ -86,6 +98,14 @@ function client(token) {
   others[2].act('leave'); await wait(200);
   const fresh = await others[2].join({ create: true, name: 'Cat' }); // same page: Leave, then Create
   assert.ok(fresh.ok && fresh.code !== code, 'could not create after leaving');
+
+  // host Stop mid-game: everyone is told, the room and its chat are gone, players are free again
+  const closedBy = new Promise(r => others[0].once('closed', r));
+  host.act('close');
+  assert.strictEqual(await closedBy, 'Host');
+  await wait(150);
+  assert.ok((await client('e2e-token-after-x').join({ code, name: 'Z' })).gone, 'closed room still joinable');
+  assert.ok((await others[0].join({ create: true, name: 'Ann' })).ok, 'player stuck in closed room');
 
   console.log('e2e passed');
   process.exit(0);
