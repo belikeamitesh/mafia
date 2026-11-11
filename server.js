@@ -12,7 +12,7 @@ const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
   res.end(page);
 });
-const io = new Server(server, { maxHttpBufferSize: 1e4 });
+const io = new Server(server, { maxHttpBufferSize: 700 * 1024 }); // room for one 30s voice note
 
 // ponytail: rooms live in memory; a server restart ends running games. Add Redis if that ever matters.
 const rooms = new Map();
@@ -23,12 +23,6 @@ io.on('connection', socket => {
 
   socket.on('join', (a = {}, cb = () => {}) => {
     if (typeof cb !== 'function') return;
-    // Same page joining again (e.g. Create after Leave): drop the old binding first.
-    if (player) {
-      socket.leave('p:' + player.id);
-      if (room.players.has(player.id)) room.disconnect(player);
-      room = player = null;
-    }
     let code = String(a.code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
     // One room per browser: leave your current room before creating or joining another.
     const current = [...rooms.values()].find(x => x.byToken.has(a.token));
@@ -40,6 +34,11 @@ io.on('connection', socket => {
     // A known token re-attaches to the same player — the same browser can never be two players.
     const res = r.join(a.token, a.name);
     if (res.error) return cb({ error: res.error, needName: !r.byToken.has(a.token) });
+    // Same page joining again (e.g. Create after Leave): drop the old binding only once the new join worked.
+    if (player) {
+      socket.leave('p:' + player.id);
+      if (room.players.has(player.id)) room.disconnect(player);
+    }
     room = r; player = res.player;
     socket.join('p:' + player.id);
     cb({ ok: true, code });
@@ -49,7 +48,7 @@ io.on('connection', socket => {
 
   socket.on('act', (a = {}) => {
     if (!room || !room.players.has(player.id)) return;
-    try { room.handle(player, a.type, a); }
+    try { room.handle(player, a.type, a); if (room.closed) rooms.delete(room.code); }
     catch (e) { socket.emit('toast', typeof e === 'string' ? e : 'Something went wrong.'); if (typeof e !== 'string') console.error(e); }
   });
 
