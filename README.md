@@ -9,7 +9,7 @@ Play Mafia online with friends. One person creates a room and shares the link, e
 3. **Start.** When everyone has joined, the host presses **🎲 Start game**. The room then locks: nobody new can join until the game ends.
 4. **Night 🌙.** Town chat closes. Mafia pick a victim, the Doctor protects someone, Police investigate someone.
 5. **Day ☀️.** Everyone learns who died and whether they were Mafia. Discuss in the chat and vote (the host sets 1–10 minutes). Most votes is out.
-6. Repeat until one side wins. The host can press **⏹ Stop** at any time to end the game.
+6. Repeat until one side wins. The host can press **⏹ Stop** at any time: the game ends, the chat is deleted, and the room closes for everyone (the code stops working). To play again, create a new room.
 
 Tap the **ⓘ** next to any role in the game to see what it does.
 
@@ -35,10 +35,14 @@ Tap the **ⓘ** next to any role in the game to see what it does.
 - **Private chats:** Mafia always have one. Police and Doctors get one only when there are 2 of them.
 - **Reveals:** when someone dies or is voted out, everyone learns only whether they were **Mafia or not**, never their exact role. All roles are shown when the game ends.
 - **Voting:** votes are public and can be changed until time runs out. A tie, or more "skip" votes than the top player got, means nobody is out. If everyone has voted, the vote closes after 15 more seconds.
+- **Voice notes:** tap 🎤 to record (up to 30 seconds), tap ⏹ to send, ✕ to discard. They follow the same rules as text: team notes stay in the team chat, nobody can post in Town at night, and out players only post in the Graveyard. The browser asks once for microphone access.
 - **Out players** can't vote or talk in Town chat. They talk to each other in the 👻 Graveyard chat.
 - **Winning:** the Town wins when every Mafia is out. The Mafia win when they equal or outnumber everyone else.
 - **Leaving** mid-game counts as being out.
-- **One player per browser:** refreshing or opening a second tab keeps you as the same player, so you can rejoin after a dropped connection. A different browser or a private window counts as a new player.
+- **Refreshing is safe:** refreshing, closing the tab or losing connection keeps you in your room. Open the site again and you're back where you were, with the same room code.
+- **One game at a time:** you can't create or join another room while you're in one. Press 🚪 Leave first.
+- **Rejoining after leaving:** after pressing 🚪 Leave, a **↩️ Rejoin room** button appears. In the lobby you simply join again. Mid-game you come back as an out player who can watch and use the Graveyard chat, because leaving counted as being out.
+- **One player per browser:** a second tab is the same player. A different browser or a private window counts as a new player.
 
 ## Run it on your computer
 
@@ -57,7 +61,7 @@ Open http://localhost:3000.
 npm test
 ```
 
-This runs 49 checks covering roles, secrecy, night actions, every vote outcome, win conditions, chat rules, leaving and the host controls. To test with real connections, start the server on port 3999 (`PORT=3999 npm start`) and run `npm run e2e` in a second terminal.
+This runs 55 checks covering roles, secrecy, night actions, every vote outcome, win conditions, chat rules, leaving and the host controls. To test with real connections, start the server on port 3999 (`PORT=3999 npm start`) and run `npm run e2e` in a second terminal.
 
 ## Free hosting on Render
 
