@@ -167,6 +167,7 @@ section{min-height:0;display:flex;flex-direction:column;gap:12px}
         <button class="primary" id="joinBtn">Join game</button>
       </div>
       <div id="createBox" class="stack">
+        <button class="primary hidden" id="rejoinBtn"></button>
         <button class="primary" id="createBtn">Create a room</button>
         <div class="or">or join with a code</div>
         <div class="row"><input id="codeIn" maxlength="8" placeholder="Room code" style="text-transform:uppercase"><button id="codeBtn">Join</button></div>
@@ -237,7 +238,8 @@ if (!token) { token = (crypto.randomUUID ? crypto.randomUUID() : Math.random().t
 $('#nameIn').value = store.get('mafia_name') || '';
 
 const socket = io();
-let S = null, roomCode = new URLSearchParams(location.search).get('room')?.toUpperCase() || null;
+// Your current room survives refreshes and reopening the site, until you press Leave.
+let S = null, roomCode = new URLSearchParams(location.search).get('room')?.toUpperCase() || store.get('mafia_room') || null;
 let msgs = new Map(), tab = 'public', unread = { public: 0, mafia: 0, police: 0, doctor: 0, dead: 0 }, clockSkew = 0, mobilePane = 'left';
 const typers = {}; let lastTypingSent = 0;
 
@@ -245,12 +247,15 @@ const typers = {}; let lastTypingSent = 0;
 function join(opts) {
   socket.emit('join', { token, ...opts }, res => {
     if (res.error) {
+      // Already in another room: take them back there instead of starting a second game.
+      if (res.code) { toast(res.error); roomCode = res.code; return join({ code: res.code, resume: true }); }
       if (opts.resume && res.needName) return showLanding(roomCode);
       toast(res.error);
-      if (/not found/.test(res.error)) { roomCode = null; history.replaceState(null, '', '/'); showLanding(); }
+      if (res.gone) { forgetRoom(); store.set('mafia_last_room', ''); showLanding(); }
       return;
     }
     roomCode = res.code;
+    store.set('mafia_room', roomCode); store.set('mafia_last_room', '');
     history.replaceState(null, '', '/?room=' + roomCode);
     $('#landing').classList.add('hidden'); $('#app').classList.remove('hidden');
   });
@@ -270,13 +275,20 @@ socket.on('msgUpdate', u => { const m = msgs.get(u.id); if (m) { m.reactions = u
 socket.on('typing', t => { typers[t.ch + t.id] = { ...t, until: Date.now() + 3000 }; renderTyping(); });
 socket.on('toast', toast);
 socket.on('announce', a => announce(a));
-socket.on('kicked', reason => { S = null; roomCode = null; history.replaceState(null, '', '/'); showLanding(); toast('You ' + reason.replace('was ', 'were ') + '.'); });
+function forgetRoom() { S = null; roomCode = null; store.set('mafia_room', ''); history.replaceState(null, '', '/'); }
+// Render's free plan sleeps after 15 idle minutes; a ping while in a room keeps a running game alive.
+setInterval(() => { if (roomCode) fetch('/health').catch(() => {}); }, 4 * 60000);
+socket.on('kicked', reason => { if (/left/.test(reason)) store.set('mafia_last_room', roomCode); forgetRoom(); showLanding(); toast('You ' + reason.replace('was ', 'were ') + '.'); });
 
 function showLanding(code) {
   $('#app').classList.add('hidden'); $('#landing').classList.remove('hidden');
   $('#joinBox').classList.toggle('hidden', !code); $('#createBox').classList.toggle('hidden', !!code);
   $('#joinCode').textContent = code || '';
+  const last = store.get('mafia_last_room');
+  $('#rejoinBtn').classList.toggle('hidden', !last);
+  $('#rejoinBtn').textContent = '↩️ Rejoin room ' + last;
 }
+$('#rejoinBtn').onclick = () => { const name = named(); if (name) { roomCode = store.get('mafia_last_room'); join({ code: roomCode, name }); } };
 const named = () => { const n = $('#nameIn').value.trim(); if (!n) { toast('Enter your name first'); $('#nameIn').focus(); } else store.set('mafia_name', n); return n; };
 $('#createBtn').onclick = () => { const name = named(); if (name) join({ create: true, name }); };
 $('#joinBtn').onclick = () => { const name = named(); if (name) join({ code: roomCode, name }); };
