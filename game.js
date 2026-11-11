@@ -38,6 +38,7 @@ class Room {
     Object.assign(this, { code, send, schedule, cancel });
     this.players = new Map();   // id -> player
     this.byToken = new Map();   // secret browser token -> player
+    this.leftTokens = new Map(); // players who left mid-game, so they can come back to watch
     this.hostId = null;
     this.phase = 'lobby';       // lobby | night | day | ended
     this.round = 0;
@@ -58,6 +59,14 @@ class Room {
   join(token, rawName) {
     const known = this.byToken.get(token);
     if (known) return { player: known };
+    const back = this.leftTokens.get(token);
+    if (back && this.players.has(back.id)) {
+      // Left mid-game: they stay out of this game (already revealed) but can watch and use the Graveyard.
+      this.leftTokens.delete(token); this.byToken.set(token, back); back.left = false;
+      this.sys(`${back.name} came back to watch.`);
+      this.broadcast();
+      return { player: back };
+    }
     if (this.phase === 'night' || this.phase === 'day') return { error: 'This game has already started — the room is locked. Ask the host to let you in next game.' };
     if (typeof token !== 'string' || token.length < 10 || token.length > 100) return { error: 'Bad session, refresh the page.' };
     const name = String(rawName || '').replace(/[\u0000-\u001f<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 16);
@@ -96,7 +105,7 @@ class Room {
     this.byToken.delete(p.token);
     this.send(p.id, 'kicked', reason);
     const forfeit = (this.phase === 'night' || this.phase === 'day') && this.inGame(p) && p.alive;
-    if (forfeit) p.left = true; else this.players.delete(p.id);
+    if (forfeit) { p.left = true; this.leftTokens.set(p.token, p); } else this.players.delete(p.id);
     if (p.id === this.hostId) {
       const next = [...this.players.values()].find(q => q.sockets && !q.left) || [...this.players.values()].find(q => !q.left);
       this.hostId = next ? next.id : null;
@@ -281,6 +290,7 @@ class Room {
 
   resetToLobby(announce = true) {
     this.cancel(this.timer);
+    this.leftTokens.clear(); // in the lobby anyone who left just joins again normally
     for (const p of [...this.players.values()]) {
       if (p.left || !p.sockets) { this.players.delete(p.id); this.byToken.delete(p.token); continue; }
       Object.assign(p, { alive: true, role: null, spectator: false, lastSave: null, results: [] });
