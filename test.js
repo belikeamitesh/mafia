@@ -445,4 +445,23 @@ t('play again straight from game over', () => {
   assert.strictEqual([...r.players.values()].filter(p => p.role).length, 5);
 });
 
+t('left mid-game: can come back to the same room as a watcher, not alive', () => {
+  const { r, ps } = game('MMPDVVVVV');
+  r.handle(ps[5], 'leave');
+  const back = r.join('token-player-5', 'P5').player;
+  assert.strictEqual(back, ps[5]);
+  assert.ok(!back.alive && !back.left);
+  throws(() => r.vote(back, ps[0].id), /day|Dead/);
+  r.chat(back, 'dead', 'I am back');
+  throws(() => r.chat(back, 'public', 'hi'), /out|dead|asleep/);
+  assert.match(r.join('token-strangerx', 'New').error, /locked/);
+});
+t('left in lobby: can join the same room again as a fresh player', () => {
+  const { r } = room();
+  const a = r.join('token-aaaaaaaa', 'A').player; r.connect(a);
+  r.handle(a, 'leave');
+  const again = r.join('token-aaaaaaaa', 'A').player;
+  assert.ok(again && again !== a && r.players.has(again.id));
+});
+
 console.log(`all ${passed} rule checks passed`);
