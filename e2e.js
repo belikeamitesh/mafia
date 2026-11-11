@@ -4,7 +4,9 @@ const { io } = require('socket.io-client');
 const URL = 'http://localhost:' + (process.env.PORT || 3999);
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
+const RUN = '-' + Date.now();
 function client(token) {
+  token += RUN; // unique per run so a reused server doesn't see old players
   const s = io(URL, { forceNew: true, transports: ['websocket'] });
   Object.assign(s, { token, state: null, msgs: [], ann: [], toasts: [] });
   s.on('state', x => (s.state = x));
@@ -32,7 +34,7 @@ function client(token) {
 
   // duplicate name from another browser rejected; bad room rejected
   assert.match((await client('e2e-token-dupe-xx').join({ code, name: 'ann' })).error, /taken/);
-  assert.match((await client('e2e-token-nope-xx').join({ code: 'ZZZZZ', name: 'X' })).error, /not found/);
+  assert.match((await client('e2e-token-nope-xx').join({ code: 'ZZZZZ', name: 'X' })).error, /no longer exists/);
 
   // non-host cannot start
   others[0].act('start'); await wait(150);
@@ -70,6 +72,20 @@ function client(token) {
   const id = others[1].state.me.id; others[1].disconnect();
   const again = client('e2e-token-p1-xxxx'); assert.ok((await again.join({ code })).ok); await wait(150);
   assert.strictEqual(again.state.me.id, id);
+
+  // one room per browser: cannot create or join another while in one
+  const second = await host.join({ create: true, name: 'Host' });
+  assert.ok(second.error && second.code === code, 'host could create a 2nd room');
+  const other = client('e2e-token-other-01');
+  const otherCode = (await other.join({ create: true, name: 'Owner' })).code;
+  const hop = await client('e2e-token-p2-xxxx').join({ code: otherCode, name: 'Cat' });
+  assert.strictEqual(hop.code, code, 'player could join a 2nd room');
+  // a missing room says so clearly
+  assert.ok((await client('e2e-token-gone-xx').join({ code: 'QQQQQ', resume: true })).gone);
+  // leaving frees you to create a new room
+  others[2].act('leave'); await wait(200);
+  const fresh = await others[2].join({ create: true, name: 'Cat' }); // same page: Leave, then Create
+  assert.ok(fresh.ok && fresh.code !== code, 'could not create after leaving');
 
   console.log('e2e passed');
   process.exit(0);
