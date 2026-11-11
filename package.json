@@ -1,0 +1,19 @@
+{
+  "name": "mafia-night",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js",
+    "e2e": "node e2e.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.4"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
+  }
+}
