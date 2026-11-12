@@ -1,6 +1,7 @@
 # 🔪 Mafia Night
 
 Play Mafia online with friends. One person creates a room and shares the link, everyone joins with just a name, and the game deals secret roles, runs the night and day phases, and counts the votes. No accounts, no downloads, works on phones.
+Play here - https://mafia-ptqv.onrender.com/
 
 ## How to play
 
