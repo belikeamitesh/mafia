@@ -510,4 +510,71 @@ t('typing indicator can say "recording"', () => {
   assert.deepStrictEqual(sent.filter(s => s.ev === 'typing').map(s => s.d.rec), [true]);
 });
 
+// ---------- replies ----------
+t('replies quote the original (same chat only), voice notes too', () => {
+  const { r, ps } = game('MMPDVVVV');
+  const [m1, m2] = ps;
+  r.chat(m1, 'mafia', 'kill P5 tonight');
+  const secret = r.messages.at(-1).id;
+  m2.lastMsgAt = 0; r.chat(m2, 'mafia', 'ok', secret);
+  assert.deepStrictEqual(r.messages.at(-1).reply, { id: secret, name: 'P0', color: m1.color, text: 'kill P5 tonight' });
+  r.endNight();
+  ps[4].lastMsgAt = 0; r.chat(ps[4], 'public', 'who?', secret);   // quoting a mafia message in town must not leak it
+  assert.strictEqual(r.messages.at(-1).reply, undefined);
+  const q = r.messages.at(-1).id;
+  ps[5].lastMsgAt = 0; r.voice(ps[5], 'public', Buffer.alloc(500, 1), 'audio/webm', 4, q);
+  assert.strictEqual(r.messages.at(-1).reply.text, 'who?');
+  const v = r.messages.at(-1).id;
+  ps[6].lastMsgAt = 0; r.chat(ps[6], 'public', 'lol', v);
+  assert.strictEqual(r.messages.at(-1).reply.text, '🎤 Voice note (4s)');
+  ps[7].lastMsgAt = 0; r.chat(ps[7], 'public', 'x', 99999);
+  assert.strictEqual(r.messages.at(-1).reply, undefined);
+});
+t('reply quote is trimmed and system messages cannot be quoted', () => {
+  const { r, ps } = game('MPDVVV');
+  r.endNight();
+  r.chat(ps[3], 'public', 'y'.repeat(400));
+  ps[4].lastMsgAt = 0; r.chat(ps[4], 'public', 'tl;dr', r.messages.at(-1).id);
+  assert.strictEqual(r.messages.at(-1).reply.text.length, 120);
+  const sys = r.messages.find(m => !m.from).id;
+  ps[5].lastMsgAt = 0; r.chat(ps[5], 'public', 'hm', sys);
+  assert.strictEqual(r.messages.at(-1).reply, undefined);
+});
+
+// ---------- end-of-game recap ----------
+t('recap records each night and day, and is hidden until the game ends', () => {
+  const { r, ps } = game('MPDVVV');
+  const [m, c, d, v1, v2, v3] = ps;
+  r.nightAction(m, v1.id); r.nightAction(d, v1.id); r.nightAction(c, v2.id); r.endNight();
+  r.vote(v1, v2.id); r.vote(v2, v3.id); r.vote(v3, 'skip'); r.endDay();          // tie: nobody out
+  assert.strictEqual(r.view(v1).recap, null, 'recap leaked mid-game');
+  r.nightAction(m, v1.id); r.endNight();                                            // v1 dies
+  [c, d, v2, v3].forEach(p => r.vote(p, m.id)); r.endDay();                         // mafia out, town wins
+  const recap = r.view(v2).recap;
+  assert.deepStrictEqual(recap[0], { round: 1, phase: 'night', target: 'P3', killed: false,
+    saves: [{ by: 'P2', name: 'P3' }], checks: [{ by: 'P1', name: 'P4', mafia: false }] });
+  assert.deepStrictEqual(recap[1], { round: 1, phase: 'day', votes: { P4: ['P3'], P5: ['P4'], skip: ['P5'] }, out: null, mafia: false });
+  assert.strictEqual(recap[2].killed, true);
+  assert.deepStrictEqual(recap[3].out, 'P0'); assert.strictEqual(recap[3].mafia, true);
+});
+t('recap notes players who left; dead roles take no recap actions', () => {
+  const { r, ps } = game('MPDVVV');
+  r.nightAction(ps[0], ps[1].id); r.nightAction(ps[1], ps[0].id); r.endNight();     // police killed; check still counts (acted alive)
+  r.remove(ps[3], 'left the game');
+  r.endDay(); r.endNight();
+  const { recap } = r;
+  assert.strictEqual(recap[0].checks.length, 1);
+  assert.ok(recap.some(e => e.left === 'P3' && e.mafia === false));
+  assert.strictEqual(recap.at(-1).checks.length, 0, 'dead police appeared in recap');
+});
+t('new game starts with an empty recap; game start/end are logged', () => {
+  const { r, ps } = game('MPDVVV');
+  const logs = []; r.log = (e, d) => logs.push(e);
+  r.remove(ps[0], 'left the game');
+  assert.ok(r.recap.length && logs.includes('game_over'));
+  r.handle(ps[1], 'start');
+  assert.deepStrictEqual(r.recap, []);
+  assert.ok(logs.includes('game_start'));
+});
+
 console.log(`all ${passed} rule checks passed`);

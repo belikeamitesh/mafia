@@ -2,8 +2,6 @@
 
 Play Mafia online with friends. One person creates a room and shares the link, everyone joins with just a name, and the game deals secret roles, runs the night and day phases, and counts the votes. No accounts, no downloads, works on phones.
 
-https://mafia-ptqv.onrender.com/
-
 ## How to play
 
 1. **Create a room.** Open the site, type your name, click **Create a room**. You are the host 👑.
@@ -14,6 +12,10 @@ https://mafia-ptqv.onrender.com/
 6. Repeat until one side wins. The host can press **⏹ Stop** at any time: the game ends, the chat is deleted, and the room closes for everyone (the code stops working). To play again, create a new room.
 
 Tap the **ⓘ** next to any role in the game to see what it does.
+
+**Never miss your turn.** A 👇 hint, glowing player cards and a "Tap here" banner show exactly what to do when it is your move. A sound and vibration play when night falls, when it's your turn to act, when voting starts and 30 seconds before it closes, and the tab title blinks if you're in another tab. Tap 🔔 to mute.
+
+**End-of-game recap.** When the game ends, everyone sees a night-by-night timeline: who the Mafia targeted, who the Doctor protected, who the Police checked, and how everyone voted each day.
 
 ## Roles
 
@@ -37,6 +39,7 @@ Tap the **ⓘ** next to any role in the game to see what it does.
 - **Private chats:** Mafia always have one. Police and Doctors get one only when there are 2 of them.
 - **Reveals:** when someone dies or is voted out, everyone learns only whether they were **Mafia or not**, never their exact role. All roles are shown when the game ends.
 - **Voting:** votes are public and can be changed until time runs out. A tie, or more "skip" votes than the top player got, means nobody is out. If everyone has voted, the vote closes after 15 more seconds.
+- **Chat like WhatsApp:** type `@` to pick someone to mention, or tap a name in the chat. Tap a message (or hover on desktop) for reactions and **↩️ Reply**, which quotes it; tapping a quote jumps to the original. You get a notice when someone mentions you or replies to you. **😊** opens an emoji picker.
 - **Voice notes:** tap 🎤 to record (up to 30 seconds), tap ⏹ to send, ✕ to discard. They follow the same rules as text: team notes stay in the team chat, nobody can post in Town at night, and out players only post in the Graveyard. The browser asks once for microphone access.
 - **Out players** can't vote or talk in Town chat. They talk to each other in the 👻 Graveyard chat.
 - **Winning:** the Town wins when every Mafia is out. The Mafia win when they equal or outnumber everyone else.
@@ -63,7 +66,9 @@ Open http://localhost:3000.
 npm test
 ```
 
-This runs 55 checks covering roles, secrecy, night actions, every vote outcome, win conditions, chat rules, leaving and the host controls. To test with real connections, start the server on port 3999 (`PORT=3999 npm start`) and run `npm run e2e` in a second terminal.
+This runs 60 checks covering roles, secrecy, night actions, every vote outcome, win conditions, chat rules, replies, voice notes, the end-of-game recap, leaving and the host controls. To test with real connections, start the server on port 3999 (`PORT=3999 npm start`) and run `npm run e2e` in a second terminal. It checks the served files, the one-room-per-browser rule, secret chats over real connections, voice notes, Stop and the request limits.
+
+Both run automatically on GitHub after every upload (`.github/workflows/test.yml`); see the ✅ or ❌ next to each commit. In Render, set **Settings → Auto-Deploy** to **After CI checks pass** so a broken upload never goes live.
 
 ## Free hosting on Render
 
@@ -73,12 +78,43 @@ This runs 55 checks covering roles, secrecy, night actions, every vote outcome, 
 
 The free plan sleeps after 15 minutes with no visitors; the first visit after that takes about 50 seconds to load. Rooms are kept in memory, so a redeploy or restart ends any game in progress.
 
+## How it works
+
+```
+ browser (public/)                      server (Node.js)
+┌──────────────────────┐  Socket.IO   ┌───────────────────────────────┐
+│ index.html  layout   │ ───────────▶ │ server.js                     │
+│ style.css   look     │   actions    │  · serves the 3 page files    │
+│ app.js      renders  │              │  · one socket = one player    │
+│   state, sends taps  │ ◀─────────── │  · request limits, JSON logs  │
+└──────────────────────┘ state, chat, │            │                  │
+                         announcements│            ▼                  │
+                                      │ game.js  (Room)               │
+                                      │  · all rules, timers, votes   │
+                                      │  · decides who may see what   │
+                                      └───────────────────────────────┘
+```
+
+- **The server is the only source of truth.** `game.js` holds the full game; each player is sent a personal `view` with only what they are allowed to know (your role, your teammates, dead players as Mafia / not Mafia). Secret roles never reach other browsers, so they can't be found with developer tools.
+- **Identity without accounts.** Each browser keeps a random secret token. The server maps token → player, so a refresh or second tab is the same player, and players are only ever shown each other's public ids.
+- **Everything is in memory.** Rooms, chat and voice notes live in the server process and disappear when a room closes or the server restarts. Rooms nobody has been connected to for 30 minutes are cleaned up automatically.
+- **Limits:** 20 new rooms per network per 10 minutes, 20 join attempts per minute and 40 actions per 10 seconds per connection, 30-second voice notes (only the newest 40 per room keep their audio).
+- **Logs:** one JSON line per event (`room_created`, `game_start`, `game_over`, `room_closed`, `error`…) in Render's **Logs** tab. No names, messages or IP addresses are logged.
+
+### Do we need a database?
+
+Not for this game. A match lasts minutes, nothing needs to be kept afterwards, and there are no accounts. A database would only help a game survive a server restart or redeploy, and Render's free plan has no persistent database to put it in. If that ever matters, store each `Room` in Redis and load it on startup; nothing else in the code needs to change.
+
 ## Project layout
 
 | File | What it does |
 |---|---|
-| `game.js` | All game rules: roles, phases, votes, chat permissions |
-| `server.js` | Web server and live connections (Socket.IO) |
-| `public/index.html` | The whole user interface |
-| `test.js`, `e2e.js` | Rule checks and the real-connection test |
+| `game.js` | All game rules: roles, phases, votes, recap, chat permissions |
+| `server.js` | Web server, live connections (Socket.IO), limits and logging |
+| `public/index.html` | Page layout |
+| `public/style.css` | Look and feel |
+| `public/app.js` | Everything the browser does: rendering, chat, voice notes, alerts |
+| `test.js` | Rule checks (`npm test`) |
+| `e2e.js` | Real-connection test (`npm run e2e`) |
+| `.github/workflows/test.yml` | Runs both tests on GitHub after every upload |
 | `render.yaml` | Render settings |

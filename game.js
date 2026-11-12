@@ -56,6 +56,8 @@ class Room {
     this.night = null;
     this.votes = new Map();
     this.emptySince = Date.now();
+    this.recap = [];            // what happened each night/day, shown to everyone when the game ends
+    this.log = () => {};        // the server plugs in its logger
   }
 
   // ---------- membership ----------
@@ -114,6 +116,7 @@ class Room {
       this.hostId = next ? next.id : null;
     }
     if (!forfeit) { this.sys(`${p.name} ${reason}.`); return this.broadcast(); }
+    this.recap.push({ round: this.round, phase: this.phase, left: p.name, mafia: p.role === 'mafia' });
     this.kill(p, `${p.name} ${reason}. ${side(p)}.`);
     if (this.checkWin()) return;
     this.maybeFinishEarly();
@@ -136,6 +139,8 @@ class Room {
     active.forEach((p, i) => Object.assign(p, { role: deck[i], spectator: false }));
     this.winner = null;
     this.round = 0;
+    this.recap = [];
+    this.log('game_start', { players: active.length });
     this.messages = this.messages.filter(m => m.ch === 'public'); // old mafia/graveyard chats stay secret
     this.sys(`🎲 New game with ${active.length} players: ${this.countsText()}.`);
     for (const p of active) this.send(p.id, 'announce', { kind: 'role', role: p.role });
@@ -206,6 +211,14 @@ class Room {
       const r = { round: this.round, id: t.id, name: t.name, mafia: t.role === 'mafia', by: this.players.get(cop).name };
       for (const q of police) { q.results.push(r); this.send(q.id, 'announce', { kind: 'investigate', ...r }); }
     }
+    const name = id => this.players.get(id)?.name;
+    this.recap.push({
+      round: this.round, phase: 'night',
+      target: victim?.name || null,
+      killed: !!(victim && victim.alive && !saved.has(victim.id)),
+      saves: [...this.night.doctor.entries()].filter(([d]) => this.players.get(d)?.alive).map(([d, t]) => ({ by: name(d), name: name(t) })),
+      checks: [...this.night.police.entries()].filter(([c]) => this.players.get(c)?.alive).map(([c, t]) => ({ by: name(c), name: name(t), mafia: this.players.get(t)?.role === 'mafia' })),
+    });
     let text;
     if (victim && victim.alive && !saved.has(victim.id)) {
       text = `☠️ ${victim.name} was killed by the Mafia. ${side(victim)}.`;
@@ -249,8 +262,13 @@ class Room {
     const { top, count } = topVoted(this.votes, 'skip');
     const skips = [...this.votes.values()].filter(t => t === 'skip').length;
     let text, out = null;
+    const tally = {};
+    for (const [v, t] of this.votes) (tally[t === 'skip' ? 'skip' : this.players.get(t).name] ||= []).push(this.players.get(v).name);
+    const day = { round: this.round, phase: 'day', votes: tally, out: null, mafia: false };
+    this.recap.push(day);
     if (top.length === 1 && count > skips) {
       out = this.players.get(top[0]);
+      Object.assign(day, { out: out.name, mafia: out.role === 'mafia' });
       text = out.role === 'mafia'
         ? `⚖️ ${out.name} was voted out with ${count} vote(s) — and they WERE Mafia! 🔪`
         : `⚖️ ${out.name} was voted out with ${count} vote(s) — they were NOT Mafia. 😬`;
@@ -280,6 +298,7 @@ class Room {
     if (mafia && mafia < town) return false;
     this.winner = mafia ? 'mafia' : 'town';
     this.phase = 'ended';
+    this.log('game_over', { winner: this.winner, rounds: this.round });
     this.cancel(this.timer);
     this.deadline = 0;
     const mafiaNames = [...this.players.values()].filter(p => p.role === 'mafia' && this.inGame(p)).map(p => p.name).join(', ');
@@ -338,20 +357,26 @@ class Room {
     p.lastMsgAt = now;
   }
 
-  chat(p, ch, raw) {
+  // A reply keeps a small snapshot of the quoted message (same channel only), so it still shows if the original scrolls away.
+  quote(ch, id) {
+    const m = id && this.messages.find(x => x.id === id && x.ch === ch && x.from);
+    return m ? { id: m.id, name: m.name, color: m.color, text: m.voice ? `🎤 Voice note (${m.voice.dur}s)` : m.text.slice(0, 120) } : undefined;
+  }
+
+  chat(p, ch, raw, replyTo) {
     const text = String(raw || '').replace(/[\u0000-\u0008\u000b-\u001f]/g, '').trim().slice(0, 400);
     if (!text) return;
     this.checkPost(p, ch, 400);
-    this.post({ ch, from: p.id, name: p.name, color: p.color, text });
+    this.post({ ch, from: p.id, name: p.name, color: p.color, text, reply: this.quote(ch, replyTo) });
   }
 
-  voice(p, ch, audio, mime, dur) {
+  voice(p, ch, audio, mime, dur, replyTo) {
     if (!Buffer.isBuffer(audio) || audio.length < 100) throw 'That voice note was empty.';
     if (audio.length > MAX_VOICE_BYTES) throw 'Voice note too long — keep it under 30 seconds.';
     mime = String(mime || '').split(';')[0];
     if (!VOICE_TYPES.includes(mime)) throw 'Your browser recorded an unsupported audio format.';
     this.checkPost(p, ch, 1500);
-    this.post({ ch, from: p.id, name: p.name, color: p.color, text: '', voice: { data: audio, mime, dur: Math.min(30, Math.max(1, Math.round(+dur) || 1)) } });
+    this.post({ ch, from: p.id, name: p.name, color: p.color, text: '', reply: this.quote(ch, replyTo), voice: { data: audio, mime, dur: Math.min(30, Math.max(1, Math.round(+dur) || 1)) } });
     // ponytail: only the newest MAX_VOICE_KEPT notes keep their audio, so a long game can't eat the server's memory.
     const voices = this.messages.filter(m => m.voice && m.voice.data);
     for (const m of voices.slice(0, -MAX_VOICE_KEPT)) m.voice = { expired: true, dur: m.voice.dur };
@@ -414,6 +439,7 @@ class Room {
           : !p.alive && this.inGame(p) ? (p.role === 'mafia' ? 'mafia' : 'town') : null,
       })),
       votes: this.phase === 'day' ? Object.fromEntries(this.votes) : null,
+      recap: ended ? this.recap : null,
       night: this.phase !== 'night' || !this.inGame(me) || !me.alive ? null
         : me.role === 'mafia' ? { picks: Object.fromEntries(this.night.mafia) }
         : me.role === 'doctor' ? { mine: this.night.doctor.get(me.id), picks: Object.fromEntries(this.night.doctor) }
@@ -425,8 +451,8 @@ class Room {
   handle(p, type, a = {}) {
     const isHost = p.id === this.hostId;
     switch (type) {
-      case 'chat': return this.chat(p, a.ch, a.text);
-      case 'voice': return this.voice(p, a.ch, a.audio, a.mime, a.dur);
+      case 'chat': return this.chat(p, a.ch, a.text, a.replyTo);
+      case 'voice': return this.voice(p, a.ch, a.audio, a.mime, a.dur, a.replyTo);
       case 'react': return this.react(p, a.id, a.emoji);
       case 'typing': return this.typing(p, a.ch, a.rec);
       case 'vote': return this.vote(p, a.target);

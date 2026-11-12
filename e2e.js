@@ -19,6 +19,15 @@ function client(token) {
 }
 
 (async () => {
+  // static files and health check
+  for (const [p, type] of [['/', 'text/html'], ['/?room=ABCDE', 'text/html'], ['/style.css', 'text/css'], ['/app.js', 'text/javascript'], ['/../server.js', 'text/html']]) {
+    const res = await fetch(URL + p);
+    assert.ok(res.ok && res.headers.get('content-type').startsWith(type), p + ' served wrong');
+    assert.strictEqual(res.headers.get('x-content-type-options'), 'nosniff');
+  }
+  assert.strictEqual(await (await fetch(URL + '/health')).text(), 'ok');
+  // creating a room with no name fails cleanly
+  assert.match((await client('e2e-token-noname').join({ create: true, name: ' ' })).error, /name/);
   const host = client('e2e-token-host-0001');
   const { code, error } = await host.join({ create: true, name: 'Host' });
   assert.ok(code && !error);
@@ -106,6 +115,12 @@ function client(token) {
   await wait(150);
   assert.ok((await client('e2e-token-after-x').join({ code, name: 'Z' })).gone, 'closed room still joinable');
   assert.ok((await others[0].join({ create: true, name: 'Ann' })).ok, 'player stuck in closed room');
+
+  // request limits: hammering joins from one connection gets throttled
+  const spam = client('e2e-token-spammer');
+  let throttled = false;
+  for (let i = 0; i < 25 && !throttled; i++) throttled = /Too many/.test((await spam.join({ code: 'NOPE1' })).error || '');
+  assert.ok(throttled, 'join spam was not limited');
 
   console.log('e2e passed');
   process.exit(0);
