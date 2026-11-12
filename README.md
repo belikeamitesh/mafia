@@ -49,6 +49,14 @@ Tap the **ⓘ** next to any role in the game to see what it does.
 - **Rejoining after leaving:** after pressing 🚪 Leave, a **↩️ Rejoin room** button appears. In the lobby you simply join again. Mid-game you come back as an out player who can watch and use the Graveyard chat, because leaving counted as being out.
 - **One player per browser:** a second tab is the same player. A different browser or a private window counts as a new player.
 
+<img width="1344" height="1190" alt="image" src="https://github.com/user-attachments/assets/d858b614-ea9f-42ce-87ca-9da802735c2a" />
+
+<img width="2994" height="1634" alt="image" src="https://github.com/user-attachments/assets/ea6b85c6-ec27-44ed-a81d-180aa4cda9a1" />
+
+<img width="2146" height="1542" alt="image" src="https://github.com/user-attachments/assets/cc75e4b7-0573-404b-bde9-6936b7534d34" />
+
+
+
 ## Run it on your computer
 
 Needs [Node.js](https://nodejs.org) 18 or newer.
